@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Avaturn Creator</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module">
+      import { AvaturnSDK } from 'https://cdn.jsdelivr.net/npm/@avaturn/sdk@1.1.4/dist/index.js';
+
+      const RN = window.ReactNativeWebView;
+
+      function post(message) {
+        try {
+          const payload = JSON.stringify(message);
+          if (RN && typeof RN.postMessage === 'function') {
+            RN.postMessage(payload);
+          } else if (window.parent && typeof window.parent.postMessage === 'function') {
+            window.parent.postMessage(payload, '*');
+          } else {
+            console.log('post', payload);
+          }
+        } catch (error) {
+          console.error('Failed to post message', error);
+        }
+      }
+
+      let sdk = null;
+      let sdkReady = false;
+      let streamTrack = null;
+      let streamActive = false;
+      let animationState = {
+        current: null,
+      };
+
+      function mapAnimationCommand(command, parameters) {
+        switch (command) {
+          case 'IDLE':
+            return { type: 'setAnimation', value: 'idle' };
+          case 'POSE':
+            return { type: 'setAnimation', value: 'pose' };
+          case 'DANCE':
+            return { type: 'setAnimation', value: 'dance' };
+          case 'WAVE':
+            return { type: 'setAnimation', value: 'wave' };
+          default:
+            return { type: 'custom', value: parameters?.animation || 'idle' };
+        }
+      }
+
+      async function init(options) {
+        const container = document.getElementById('app');
+        if (!container) {
+          post({ type: 'ERROR', message: "Impossible d'initialiser Avaturn (container introuvable)." });
+          return;
+        }
+        try {
+          sdk = new AvaturnSDK();
+          const params = {};
+
+          if (options?.avatarUrl) {
+            try {
+              const editorUrl = new URL('https://preview.avaturn.dev/editor');
+              editorUrl.searchParams.append('avatar_link', options.avatarUrl);
+              params.url = editorUrl.toString();
+            } catch (error) {
+              console.warn('Failed to build editor URL', error);
+            }
+          }
+
+          await sdk.init(container, params);
+          sdkReady = true;
+          sdk.on('error', (detail) => {
+            const message =
+              (detail && detail.message) || detail || 'Une erreur est survenue dans Avaturn.';
+            post({ type: 'ERROR', message });
+          });
+          post({ type: 'READY' });
+        } catch (error) {
+          console.error('Avaturn init failed', error);
+          post({
+            type: 'ERROR',
+            message: error?.message || 'Impossible de démarrer Avaturn. Réessaie plus tard.',
+          });
+        }
+      }
+
+      async function exportAvatar() {
+        if (!sdk || !sdkReady) {
+          post({ type: 'ERROR', message: "Le configurateur n'est pas encore prêt, patiente quelques secondes." });
+          return;
+        }
+        try {
+          const result = await sdk.exportAvatar();
+          post({ type: 'AVATAR_EXPORTED', payload: result });
+        } catch (error) {
+          console.error('Export avatar failed', error);
+          post({
+            type: 'ERROR',
+            message: error?.message || "Impossible d'exporter ton avatar. Réessaie.",
+          });
+        }
+      }
+
+      async function exportAvatarWithThumbnail() {
+        if (!sdk || !sdkReady) {
+          post({ type: 'ERROR', message: "Le configurateur n'est pas encore prêt, patiente quelques secondes." });
+          return;
+        }
+        try {
+          const avatar = await sdk.exportAvatar();
+          let thumbnail = null;
+          if (sdk.generateThumbnail) {
+            try {
+              thumbnail = await sdk.generateThumbnail();
+            } catch (error) {
+              console.warn('generateThumbnail failed', error);
+            }
+          }
+          post({ type: 'ROUND_EXPORT', payload: { avatar, thumbnail } });
+        } catch (error) {
+          console.error('Round export failed', error);
+          post({
+            type: 'ERROR',
+            message: error?.message || "Impossible de finaliser l'export. Réessaie.",
+          });
+        }
+      }
+
+      async function startStreaming() {
+        if (streamActive) {
+          return;
+        }
+        const appElement = document.getElementById('app');
+        if (!appElement) {
+          post({ type: 'ERROR', message: 'Impossible de démarrer le flux (canvas introuvable).' });
+          return;
+        }
+        try {
+          const canvas = appElement.querySelector('canvas');
+          if (!canvas || typeof canvas.captureStream !== 'function') {
+            post({ type: 'ERROR', message: 'Capture stream non supportée dans cette version.' });
+            return;
+          }
+          const stream = canvas.captureStream(30);
+          const [videoTrack] = stream.getVideoTracks();
+          if (!videoTrack) {
+            post({ type: 'ERROR', message: 'Aucun flux vidéo disponible.' });
+            return;
+          }
+          streamTrack = videoTrack;
+          streamActive = true;
+          post({
+            type: 'STREAM_READY',
+            payload: {
+              streamKind: 'canvas',
+              trackId: videoTrack.id,
+              label: videoTrack.label,
+            },
+          });
+        } catch (error) {
+          console.error('Failed to capture stream', error);
+          post({ type: 'ERROR', message: 'Impossible de démarrer le flux vidéo.' });
+        }
+      }
+
+      function stopStreaming() {
+        if (!streamActive) {
+          return;
+        }
+        if (streamTrack) {
+          streamTrack.stop();
+          streamTrack = null;
+        }
+        streamActive = false;
+        post({ type: 'STREAM_STOPPED' });
+      }
+
+      function applyAnimation(command, parameters) {
+        const mapped = mapAnimationCommand(command, parameters);
+        if (!sdk || !sdkReady) {
+          return;
+        }
+        try {
+          if (mapped.type === 'setAnimation' && typeof sdk.setAnimation === 'function') {
+            sdk.setAnimation(mapped.value);
+            animationState.current = mapped.value;
+          } else if (mapped.type === 'custom' && typeof sdk.setAnimation === 'function') {
+            sdk.setAnimation(mapped.value);
+            animationState.current = mapped.value;
+          }
+          post({ type: 'ANIMATION_APPLIED', payload: { animation: animationState.current } });
+        } catch (error) {
+          console.warn('applyAnimation failed', error);
+        }
+      }
+
+      function handleMessage(message) {
+        if (!message || typeof message.type !== 'string') {
+          return;
+        }
+        switch (message.type) {
+          case 'EXPORT':
+            exportAvatar();
+            break;
+          case 'EXPORT_ROUND':
+            exportAvatarWithThumbnail();
+            break;
+          case 'REINIT':
+            init({ avatarUrl: message.avatarUrl });
+            break;
+          case 'STREAM_START':
+            startStreaming();
+            break;
+          case 'STREAM_STOP':
+            stopStreaming();
+            break;
+          case 'ANIMATION_COMMAND':
+            applyAnimation(message.command, message.parameters);
+            break;
+          default:
+            break;
+        }
+      }
+
+      function safeHandle(event) {
+        const data = event && event.data !== undefined ? event.data : event;
+        if (!data) {
+          return;
+        }
+        try {
+          const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+          const result = handleMessage(parsed);
+          if (result && typeof result.catch === 'function') {
+            result.catch((error) => console.error('Async handler failed', error));
+          }
+        } catch (error) {
+          console.error('Failed to parse message', error);
+        }
+      }
+
+      window.document.addEventListener('message', safeHandle);
+      window.addEventListener('message', (event) => {
+        try {
+          safeHandle(event);
+        } catch (error) {
+          // ignore malformed postMessage payloads
+        }
+      });
+
+      const initial = window.initialPayload || {};
+      init(initial);
+    </script>
+  </body>
+</html>

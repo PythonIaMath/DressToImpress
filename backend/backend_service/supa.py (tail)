@@ -1,0 +1,11 @@
+def get_supabase_client() -> SupabaseClient:
+    url = os.getenv("SUPABASE_URL")
+    key = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_KEY")
+    if not url or not key:
+        raise RuntimeError("Supabase environment variables are not configured.")
+    buckets = SupabaseBuckets(
+        models=os.getenv("BUCKET_MODELS", "models"),
+        screenshots=os.getenv("BUCKET_SHOTS", "screenshots"),
+        items=os.getenv("BUCKET_ITEMS", "items"),
+    )
+    return SupabaseClient(url=url, api_key=key, buckets=buckets)

@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "DressToImpress",
+    "slug": "dresstoimpress",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "dresstoimpress",
+    "userInterfaceStyle": "automatic",
+    "jsEngine": "hermes",
+    "newArchEnabled": true,
+    "updates": {
+      "enabled": false
+    },
+    "android": {
+      "package": "com.zacharypmp.DressToImpress",
+      "permissions": [
+        "INTERNET",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "SYSTEM_ALERT_WINDOW",
+        "VIBRATE"
+      ]
+    },
+    "ios": {
+      "bundleIdentifier": "com.zacharypmp.DressToImpress",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSCameraUsageDescription": "DressToImpress a besoin d'accéder à ta caméra pour diffuser ton avatar pendant la présentation.",
+        "NSMicrophoneUsageDescription": "DressToImpress utilise le micro uniquement pour les futures fonctionnalités de streaming en direct."
+      },
+      "appleTeamId": "422L9T7F9K"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "2164c0b7-884a-4ad3-a495-cf9418d06ed0"
+      }
+    }
+  }
+}
