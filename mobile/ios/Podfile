@@ -23,20 +23,6 @@ prepare_react_native_project!
 target 'DressToImpress' do
 use_expo_modules!
 
-post_install do |installer|
-  installer.pods_project.build_configurations.each do |config|
-    config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
-  end
-
-  # Hotfix ExpoGL allocator<const std::string> build break with libc++ on Xcode 16
-  file = File.join(installer.sandbox.root, 'Pods/ExpoGL/common/EXGLNativeContext.h')
-  if File.exist?(file)
-    text = File.read(file)
-    patched = text.sub('std::set<const std::string> supportedExtensions;', 'std::set<std::string> supportedExtensions;')
-    File.write(file, patched) if text != patched
-  end
-end
-
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
     config_command = ['node', '-e', "process.argv=['', '', 'config'];require('@react-native-community/cli').run()"];
   else
@@ -64,6 +50,17 @@ end
   )
 
   post_install do |installer|
+    # Force C++17 and patch ExpoGL allocator issue (const std::string) for Xcode 16+
+    installer.pods_project.build_configurations.each do |config|
+      config.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'gnu++17'
+    end
+    file = File.join(installer.sandbox.root, 'Pods/ExpoGL/common/EXGLNativeContext.h')
+    if File.exist?(file)
+      text = File.read(file)
+      patched = text.sub('std::set<const std::string> supportedExtensions;', 'std::set<std::string> supportedExtensions;')
+      File.write(file, patched) if text != patched
+    end
+
     react_native_post_install(
       installer,
       config[:reactNativePath],
