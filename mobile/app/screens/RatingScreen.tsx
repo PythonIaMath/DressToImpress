@@ -99,7 +99,6 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
   const [hasVoted, setHasVoted] = useState(false);
   const [selectedStars, setSelectedStars] = useState(0);
   const [voteCountdown, setVoteCountdown] = useState(30);
-  const [voteModalVisible, setVoteModalVisible] = useState(false);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
   const [availableAnimations, setAvailableAnimations] = useState<string[]>([]);
   const [localAnimation, setLocalAnimation] = useState<string | null>(null);
@@ -285,7 +284,6 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
   useEffect(() => {
     setHasVoted(false);
     setSelectedStars(0);
-    setVoteModalVisible(Boolean(currentPlayer && !isMyTurn));
     setAvailableAnimations([]);
     setLocalAnimation(null);
     setRemoteAnimation(null);
@@ -393,7 +391,6 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
         stars: selectedStars,
       });
       Alert.alert('Vote enregistré', 'Merci pour ta participation !');
-      setVoteModalVisible(false);
     } catch (error) {
       setHasVoted(false);
       const message =
@@ -430,98 +427,53 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.streamContainer}>
-        {currentModelUrl ? (
-          <AvatarStage
-            modelUrl={currentModelUrl}
-            animation={stageAnimation ?? undefined}
-            onAnimationsResolved={handleAnimationsResolved}
-          />
-        ) : (
-          <View style={styles.streamPlaceholder}>
-            <Text style={styles.placeholderText}>
-              {currentPlayer
-                ? 'Flux en cours de connexion...'
-                : "En attente du prochain présentateur"}
-            </Text>
-          </View>
-        )}
-        <View style={styles.streamOverlay}>
-          <Text style={styles.streamTitle}>
-            {currentPlayer
-              ? currentPlayer.user_id === user.id
-                ? "Ta présentation est en cours"
-                : `Présentation de ${currentPlayer.user_email}`
-              : "En attente d'une présentation"}
-          </Text>
-          <Text style={styles.streamSubtitle}>
-            Round {game.round} · {voteCountdown}s restants
-          </Text>
-        </View>
-      </View>
-
-      <View style={styles.infoPanel}>
-        <Text style={styles.infoLabel}>Prochain·e</Text>
-        <Text style={styles.infoValue}>
-          {nextPlayerAfterCurrent ? nextPlayerAfterCurrent.user_email : 'Dernier avatar'}
-        </Text>
-
-        {!isMyTurn && (
-          <View style={styles.voteHint}>
-            <Text style={styles.voteHintText}>
-              Note ce look pour aider à départager la meilleure tenue.
-            </Text>
-            <Button
-              title={hasVoted ? 'Vote envoyé' : 'Noter ce look'}
-              onPress={() => setVoteModalVisible(true)}
-              disabled={hasVoted}
+      <View style={styles.stageArea}>
+        <View style={styles.streamContainer}>
+          {currentModelUrl ? (
+            <AvatarStage
+              modelUrl={currentModelUrl}
+              animation={stageAnimation ?? undefined}
+              onAnimationsResolved={handleAnimationsResolved}
+              style={styles.avatarStage}
             />
-          </View>
-        )}
-
-        {isMyTurn && (
-          <View style={styles.hostStreamActions}>
-            <Text style={styles.myTurnText}>
-              Ton avatar est diffusé en direct. Laisse les autres joueurs voter !
-            </Text>
-            {availableAnimations.length > 0 && (
-              <AvatarAnimationControls
-                options={availableAnimations}
-                value={localAnimation ?? availableAnimations[0]}
-                onChange={handleHostAnimationChange}
-              />
-            )}
-          </View>
-        )}
-
-        {user.id === currentGame.host_id && (
-          <View style={styles.hostActions}>
-            <Button title="Passer au suivant" onPress={advanceToNextPlayer} />
-          </View>
-        )}
-      </View>
-
-      <Modal animationType="slide" visible={voteModalVisible} transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.voteModal}>
-            <Text style={styles.modalTitle}>Note cette tenue</Text>
-            <Text style={styles.modalSubtitle}>
-              {currentPlayer?.user_email ?? 'Avatar en cours'}
-            </Text>
-            <StarRating value={selectedStars} onChange={setSelectedStars} disabled={hasVoted} />
-            <View style={styles.modalActions}>
+          ) : (
+            <View style={styles.streamPlaceholder}>
+              <Text style={styles.placeholderText}>
+                {currentPlayer
+                  ? 'Flux en cours de connexion...'
+                  : "En attente du prochain présentateur"}
+              </Text>
+            </View>
+          )}
+        </View>
+        <View style={styles.controlsOverlay}>
+          {!isMyTurn ? (
+            <View style={styles.voteCard}>
+              <StarRating value={selectedStars} onChange={setSelectedStars} disabled={hasVoted} />
               <Button
                 title={hasVoted ? 'Vote envoyé' : 'Envoyer'}
                 onPress={submitCurrentVote}
-                disabled={!canVote || selectedStars === 0}
+                disabled={!canVote || selectedStars === 0 || hasVoted}
               />
-              {!hasVoted && (
-                <Button title="Plus tard" onPress={() => setVoteModalVisible(false)} />
-              )}
             </View>
-          </View>
+          ) : (
+            availableAnimations.length > 0 && (
+              <View style={styles.voteCard}>
+                <AvatarAnimationControls
+                  options={availableAnimations}
+                  value={localAnimation ?? availableAnimations[0]}
+                  onChange={handleHostAnimationChange}
+                />
+              </View>
+            )
+          )}
+          {user.id === currentGame.host_id && (
+            <View style={styles.hostActions}>
+              <Button title="Passer au suivant" onPress={advanceToNextPlayer} />
+            </View>
+          )}
         </View>
-      </Modal>
+      </View>
     </SafeAreaView>
   );
 }
@@ -529,14 +481,22 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#111827',
+    backgroundColor: '#0b1220',
   },
   streamContainer: {
     flex: 1,
     position: 'relative',
-    backgroundColor: '#030712',
+    backgroundColor: '#0b1220',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  stageArea: {
+    flex: 1,
+    backgroundColor: '#0b1220',
+  },
+  avatarStage: {
+    width: '100%',
+    height: '100%',
   },
   streamPlaceholder: {
     width: '100%',
@@ -549,82 +509,20 @@ const styles = StyleSheet.create({
     color: '#cbd5f5',
     textAlign: 'center',
   },
-  streamOverlay: {
+  controlsOverlay: {
     position: 'absolute',
-    bottom: 32,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    gap: 8,
+    left: 12,
+    right: 12,
+    bottom: 12,
+    gap: 10,
   },
-  streamTitle: {
-    color: '#f8fafc',
-    fontSize: 20,
-    fontWeight: '700',
-  },
-  streamSubtitle: {
-    color: '#cbd5f5',
-  },
-  infoPanel: {
-    padding: 20,
-    gap: 16,
-    backgroundColor: '#0f172a',
-  },
-  infoLabel: {
-    color: '#94a3b8',
-    textTransform: 'uppercase',
-    fontSize: 12,
-    letterSpacing: 1.1,
-  },
-  infoValue: {
-    color: '#f8fafc',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  voteHint: {
-    gap: 12,
-  },
-  voteHintText: {
-    color: '#cbd5f5',
-  },
-  myTurnText: {
-    color: '#cbd5f5',
-    fontStyle: 'italic',
+  voteCard: {
+    backgroundColor: '#111d30',
+    padding: 16,
+    borderRadius: 14,
+    gap: 10,
   },
   hostActions: {
-    marginTop: 8,
-  },
-  hostStreamActions: {
-    gap: 12,
-  },
-  pendingStream: {
-    color: '#cbd5f5',
-    fontSize: 12,
-    fontStyle: 'italic',
-  },
-  modalBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-    justifyContent: 'flex-end',
-    padding: 16,
-  },
-  voteModal: {
-    width: '100%',
-    borderRadius: 16,
-    backgroundColor: '#1f2937',
-    padding: 20,
-    gap: 16,
-  },
-  modalTitle: {
-    color: '#f8fafc',
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  modalSubtitle: {
-    color: '#cbd5f5',
-    fontSize: 14,
-  },
-  modalActions: {
-    gap: 8,
+    alignSelf: 'flex-end',
   },
 });

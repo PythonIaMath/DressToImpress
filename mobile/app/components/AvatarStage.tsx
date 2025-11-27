@@ -148,7 +148,6 @@ export function AvatarStage({
             controls.enableDamping = true;
             controls.target.set(0, 1, 0);
             let mixer = null;
-            let boxHelper = null;
             let rafId = null;
             let intervalId = null;
             let hasRenderedOnce = false;
@@ -180,12 +179,6 @@ export function AvatarStage({
                   camera.position.set(0, size.y * 0.6, cameraZ);
                   controls.target.set(0, size.y * 0.5, 0);
                   controls.update();
-                  const axes = new THREE.AxesHelper(Math.max(maxDim * 0.6, 0.5));
-                  const grid = new THREE.GridHelper(Math.max(maxDim * 4, 4), 10, 0x444444, 0x222222);
-                  scene.add(axes);
-                  scene.add(grid);
-                  boxHelper = new THREE.BoxHelper(model, 0x00ffcc);
-                  scene.add(boxHelper);
                   send({ type: 'modelInfo', hasModel: true, hasBox: true, box: { min: box.min, max: box.max }, size: { x: size.x, y: size.y, z: size.z } });
                   send({
                     type: 'camera',
@@ -202,9 +195,6 @@ export function AvatarStage({
                         child.skeleton.calculateInverses();
                       }
                     });
-                    if (boxHelper) {
-                      boxHelper.update();
-                    }
                     controls.update();
                     renderer.render(scene, camera);
                     if (!hasRenderedOnce) {
