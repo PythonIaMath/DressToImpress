@@ -76,7 +76,6 @@ export type EntryPayload = {
   game_id: string;
   round: number;
   model_glb_url: string;
-  screenshot_dataUrl: string;
 };
 
 export type VotePayload = {

@@ -8,7 +8,6 @@ import {
   Text,
   View,
 } from 'react-native';
-import { Buffer } from 'buffer';
 import type { User } from '@supabase/supabase-js';
 import type { WebViewMessageEvent } from 'react-native-webview';
 import { WebView } from 'react-native-webview';
@@ -34,16 +33,6 @@ type WebViewEvent =
 
 type RoundExportPayload = {
   avatar?: unknown;
-  thumbnail?: unknown;
-};
-
-type ImageSource =
-  | { kind: 'dataUrl'; value: string }
-  | { kind: 'http'; value: string };
-
-type ImagePayload = {
-  bytes: Uint8Array;
-  contentType: string;
 };
 
 const SUPABASE_PROJECT_URL =
@@ -143,28 +132,6 @@ function formatErrorMessage(input: unknown): string {
   } catch {
     return String(input);
   }
-}
-
-async function resolveImagePayload(source: ImageSource): Promise<ImagePayload> {
-  if (source.kind === 'dataUrl') {
-    const [metadata, base64Payload] = source.value.split(',', 2);
-    if (!base64Payload) {
-      throw new Error("Impossible d'interpréter la miniature Avaturn.");
-    }
-    const mimeMatch = metadata?.match(/^data:(.*?);/);
-    const mimeType = mimeMatch?.[1] ?? 'application/octet-stream';
-    const bytes = Buffer.from(base64Payload, 'base64');
-    return { bytes, contentType: mimeType };
-  }
-
-  const response = await fetch(source.value);
-  if (!response.ok) {
-    throw new Error("Impossible de télécharger la miniature Avaturn.");
-  }
-  const arrayBuffer = await response.arrayBuffer();
-  const bytes = Buffer.from(arrayBuffer);
-  const contentType = response.headers.get('Content-Type') ?? 'image/png';
-  return { bytes, contentType };
 }
 
 async function loadUserAvatar(): Promise<AvatarImportResponse | null> {
@@ -358,43 +325,6 @@ export function CustomizationScreen({
     `;
   }, [avatarGlbUrl, game.round, user.id]);
 
-  const extractImageSource = (payload: unknown): ImageSource | null => {
-    if (!payload) {
-      return null;
-    }
-    if (typeof payload === 'string') {
-      if (payload.startsWith('data:')) {
-        return { kind: 'dataUrl', value: payload };
-      }
-      if (payload.startsWith('http://') || payload.startsWith('https://')) {
-        return { kind: 'http', value: payload };
-      }
-      return null;
-    }
-    if (typeof payload === 'object') {
-      const candidate =
-        (payload as Record<string, unknown>).dataUrl ??
-        (payload as Record<string, unknown>).data_url ??
-        (payload as Record<string, unknown>).url ??
-        (payload as Record<string, unknown>).signedUrl ??
-        (payload as Record<string, unknown>).href ??
-        (payload as Record<string, unknown>).source;
-      if (typeof candidate === 'string' && candidate.length > 0) {
-        if (candidate.startsWith('data:')) {
-          return { kind: 'dataUrl', value: candidate };
-        }
-        if (candidate.startsWith('http://') || candidate.startsWith('https://')) {
-          return { kind: 'http', value: candidate };
-        }
-      }
-      const nested = (payload as Record<string, unknown>).thumbnail;
-      if (nested) {
-        return extractImageSource(nested);
-      }
-    }
-    return null;
-  };
-
   const handleRoundExport = async (payload?: RoundExportPayload) => {
     if (!payload) {
       Alert.alert('Erreur', "Aucune donnée n'a été renvoyée par Avaturn.");
@@ -448,12 +378,6 @@ export function CustomizationScreen({
         resolvedModelUrl = avatarSource;
       }
 
-      const screenshotSource =
-        extractImageSource(payload.thumbnail) ?? extractImageSource(payload.avatar);
-      if (!screenshotSource) {
-        throw new Error("Impossible de récupérer l'aperçu de ton avatar.");
-      }
-
       let finalModelUrl = resolvedModelUrl;
 
       if (!finalModelUrl) {
@@ -466,9 +390,9 @@ export function CustomizationScreen({
         throw new Error("Impossible de déterminer l'URL de ton avatar. Réessaie l'export.");
       }
 
-      await submitRoundEntry(screenshotSource, finalModelUrl);
+      await submitRoundEntry(finalModelUrl);
       setWaitingForOthers(true);
-      Alert.alert('Screenshot envoyé', 'Ton look est prêt pour la phase de vote !');
+      Alert.alert('Avatar prêt', 'Ton avatar 3D est synchronisé pour la phase de vote !');
     } catch (error) {
       console.error('[Customization] handleRoundExport failed', error);
       const message = formatErrorMessage(error);
@@ -504,21 +428,16 @@ export function CustomizationScreen({
     }
   };
 
-  const submitRoundEntry = async (imageSource: ImageSource, modelUrl: string) => {
-    const { bytes, contentType } = await resolveImagePayload(imageSource);
-    const base64 = Buffer.from(bytes).toString('base64');
-    const dataUrl = `data:${contentType};base64,${base64}`;
-
+  const submitRoundEntry = async (modelUrl: string) => {
     await createEntry({
       game_id: game.id,
       round: game.round,
       model_glb_url: modelUrl,
-      screenshot_dataUrl: dataUrl,
     });
 
     const { data: updatedPlayer, error } = await supabase
       .from('players')
-      .update({ ready: true })
+      .update({ ready: true, avatar_glb_url: modelUrl })
       .eq('game_id', game.id)
       .eq('user_id', user.id)
       .select('*')
@@ -535,7 +454,7 @@ export function CustomizationScreen({
             ? {
                 ...player,
                 ready: true,
-                screenshot_url: updatedPlayer.screenshot_url ?? player.screenshot_url,
+                avatar_glb_url: updatedPlayer.avatar_glb_url ?? modelUrl ?? player.avatar_glb_url,
               }
             : player
         )

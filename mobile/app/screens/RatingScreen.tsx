@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Image, Modal, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Button, Modal, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import type { User } from '@supabase/supabase-js';
 
 import { StarRating } from '../components/StarRating';
@@ -9,6 +9,74 @@ import { computeScores, submitVote } from '../lib/api';
 import type { Game, Player } from '../lib/types';
 import { supabase } from '../lib/supabaseClient';
 import { streamingSocket } from '../lib/streaming/socketClient';
+
+const SUPABASE_PROJECT_URL =
+  process.env.EXPO_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? null;
+const SUPABASE_PROJECT_BASE = SUPABASE_PROJECT_URL
+  ? SUPABASE_PROJECT_URL.replace(/\/$/, '')
+  : null;
+const SUPABASE_STORAGE_ROOT = SUPABASE_PROJECT_BASE
+  ? `${SUPABASE_PROJECT_BASE}/storage/v1/object`
+  : null;
+const SUPABASE_PUBLIC_STORAGE_ROOT = SUPABASE_STORAGE_ROOT
+  ? `${SUPABASE_STORAGE_ROOT}/public`
+  : null;
+
+function deriveSupabaseUrlFromStoragePath(pathValue: string): string | null {
+  const trimmed = pathValue.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  const sanitized = trimmed.replace(/^\/+/, '');
+  if (!sanitized) {
+    return null;
+  }
+  const storageMatch = sanitized.match(
+    /^(?:storage\/v1\/object\/)?(?:public\/)?(?<bucket>[^/]+)\/(?<rest>.+)$/
+  );
+  let bucket: string | undefined;
+  let objectPath: string | undefined;
+  if (storageMatch && storageMatch.groups) {
+    bucket = storageMatch.groups.bucket;
+    objectPath = storageMatch.groups.rest;
+  } else {
+    const [first, ...remaining] = sanitized.split('/');
+    bucket = first;
+    objectPath = remaining.join('/');
+  }
+  if (!bucket || !objectPath) {
+    return null;
+  }
+  try {
+    const { data } = supabase.storage.from(bucket).getPublicUrl(objectPath);
+    if (data?.publicUrl) {
+      return data.publicUrl;
+    }
+  } catch {
+    // ignore and fall through to manual reconstruction
+  }
+  if (SUPABASE_PUBLIC_STORAGE_ROOT) {
+    return `${SUPABASE_PUBLIC_STORAGE_ROOT}/${bucket}/${objectPath}`;
+  }
+  if (SUPABASE_STORAGE_ROOT) {
+    return `${SUPABASE_STORAGE_ROOT}/${bucket}/${objectPath}`;
+  }
+  return null;
+}
+
+function ensureModelUrl(rawValue: string | null | undefined): string | null {
+  if (!rawValue) {
+    return null;
+  }
+  const trimmed = rawValue.trim();
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return deriveSupabaseUrlFromStoragePath(trimmed);
+}
 
 type RatingScreenProps = {
   user: User;
@@ -21,7 +89,6 @@ type Entry = {
   id: string;
   player_id?: string | null;
   user_id?: string | null;
-  screenshot_url: string | null;
   model_glb_url?: string | null;
 };
 
@@ -37,7 +104,6 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
   const [availableAnimations, setAvailableAnimations] = useState<string[]>([]);
   const [localAnimation, setLocalAnimation] = useState<string | null>(null);
   const [remoteAnimation, setRemoteAnimation] = useState<string | null>(null);
-  const stageAnimation = isMyTurn ? localAnimation : remoteAnimation;
 
   const sortedPlayers = useMemo(() => {
     return [...players].sort((left, right) => {
@@ -66,14 +132,23 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
         id: currentPlayer.id,
         user_id: currentPlayer.user_id,
         player_id: currentPlayer.id,
-        screenshot_url: (currentPlayer as any).screenshot_url ?? null,
-        model_glb_url: (currentPlayer as any).model_glb_url ?? null,
+        model_glb_url: ensureModelUrl(
+          (currentPlayer as any).model_glb_url ??
+            (currentPlayer as any).avatar_glb_url ??
+            null
+        ),
       }
     : undefined;
+  const currentModelUrl = ensureModelUrl(
+    (currentEntry?.model_glb_url as string | null | undefined) ??
+      (currentPlayer as any)?.avatar_glb_url ??
+      null
+  );
   const isMyTurn =
     Boolean(currentPlayer && myPlayer && currentPlayer.id === myPlayer.id) ||
     (currentPlayer?.user_id ? currentPlayer.user_id === user.id : false);
   const canVote = Boolean(currentPlayer && !isMyTurn && !hasVoted);
+  const stageAnimation = isMyTurn ? localAnimation : remoteAnimation;
 
   // Debug hook to surface why the stage may be blank.
   useEffect(() => {
@@ -82,7 +157,7 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
       currentPlayerUser: currentPlayer?.user_id,
       myPlayerId: myPlayer?.id,
       currentEntryModel: currentEntry?.model_glb_url,
-      currentEntryScreenshot: currentEntry?.screenshot_url,
+      currentPlayerAvatar: (currentPlayer as any)?.avatar_glb_url,
       isMyTurn,
       animations: availableAnimations,
       localAnimation,
@@ -117,10 +192,22 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
             sortedPlayers.find((player) => player.id === (entry as any).player_id) ??
             sortedPlayers.find((player) => player.user_id === (entry as any).user_id);
           if (matchingPlayer) {
+            const resolved = ensureModelUrl(
+              entry.model_glb_url ??
+                (matchingPlayer as any).model_glb_url ??
+                (matchingPlayer as any).avatar_glb_url ??
+                null
+            );
+            const normalized: Entry = {
+              ...entry,
+              model_glb_url: resolved ?? entry.model_glb_url ?? null,
+            };
             // If multiple entries, keep the latest
             const existing = acc[matchingPlayer.id];
-            if (!existing || Date.parse((entry as any).created_at ?? '') > Date.parse((existing as any).created_at ?? '')) {
-              acc[matchingPlayer.id] = entry;
+            const existingCreated = existing ? Date.parse((existing as any).created_at ?? '') : 0;
+            const currentCreated = Date.parse((entry as any).created_at ?? '') || Date.now();
+            if (!existing || currentCreated >= existingCreated) {
+              acc[matchingPlayer.id] = normalized;
             }
           }
           return acc;
@@ -344,15 +431,12 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.streamContainer}>
-        {currentEntry?.model_glb_url ? (
+        {currentModelUrl ? (
           <AvatarStage
-            modelUrl={currentEntry.model_glb_url}
+            modelUrl={currentModelUrl}
             animation={stageAnimation ?? undefined}
             onAnimationsResolved={handleAnimationsResolved}
-            fallbackImageUrl={currentEntry.screenshot_url ?? null}
           />
-        ) : currentEntry?.screenshot_url ? (
-          <Image source={{ uri: currentEntry.screenshot_url }} style={styles.streamVideo} />
         ) : (
           <View style={styles.streamPlaceholder}>
             <Text style={styles.placeholderText}>
@@ -453,11 +537,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#030712',
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  streamVideo: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
   },
   streamPlaceholder: {
     width: '100%',

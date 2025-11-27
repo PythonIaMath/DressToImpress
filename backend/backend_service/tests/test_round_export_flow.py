@@ -16,10 +16,6 @@ SAMPLE_MODEL_BASE64 = (
     "VNkXi3gK9P2eFaUpJpNu+jT831P/9kAAAA="
 )
 
-SAMPLE_SCREENSHOT_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
-)
-
 
 def _pad_base64(value: str) -> str:
     remainder = len(value) % 4
@@ -67,17 +63,17 @@ def test_full_round_export_flow():
         membership_response = client.post(f"/games/{game_id}/players")
         assert membership_response.status_code == 200, membership_response.text
 
-        screenshot_data_url = f"data:image/png;base64,{_pad_base64(SAMPLE_SCREENSHOT_BASE64)}"
         entry_response = client.post(
             "/entries",
             json={
                 "game_id": game_id,
                 "round": game_payload["round"],
                 "model_glb_url": model_url,
-                "screenshot_dataUrl": screenshot_data_url,
             },
         )
         assert entry_response.status_code == 201, entry_response.text
+        entry_payload = entry_response.json()
+        assert entry_payload["model_glb_url"] == model_url
     finally:
         client.close()
         app.dependency_overrides.pop(get_current_user, None)

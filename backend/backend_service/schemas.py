@@ -88,8 +88,8 @@ class Player(BaseModel):
     user_email: str
     score: int
     ready: bool
-    screenshot_url: Optional[str] = None
     avatar_glb_url: Optional[str] = None
+    screenshot_url: Optional[str] = None
 
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "Player":
@@ -151,11 +151,12 @@ class EntryRequest(BaseModel):
     game_id: str
     round: conint(ge=0)
     model_glb_url: HttpUrl
-    screenshot_dataUrl: str = Field(min_length=1)
+    screenshot_dataUrl: Optional[str] = None
 
 
 class EntryResponse(BaseModel):
-    screenshot_url_signed: AnyHttpUrl
+    model_glb_url: AnyHttpUrl
+    screenshot_url_signed: Optional[AnyHttpUrl] = None
 
 
 class VoteRequest(BaseModel):

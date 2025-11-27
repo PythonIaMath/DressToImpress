@@ -40,6 +40,7 @@ class SupabaseClient:
         self.storage_url = f"{self.url}/storage/v1"
         self.buckets = buckets
         self._timeout = httpx.Timeout(30.0, connect=10.0)
+        self._public_storage_root = f"{self.url}/storage/v1/object/public"
 
     def _auth_headers(self) -> Dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}", "apikey": self.api_key}
@@ -101,6 +102,24 @@ class SupabaseClient:
         alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         return "".join(random.choice(alphabet) for _ in range(6))
 
+    def _normalize_storage_path(self, path_value: str, bucket: str) -> str:
+        if path_value.startswith("http://") or path_value.startswith("https://"):
+            return path_value
+        cleaned = path_value.split("?", 1)[0].lstrip("/")
+        prefix = f"{bucket}/"
+        if cleaned.startswith(prefix):
+            return cleaned[len(prefix) :]
+        return cleaned
+
+    async def _sign_model_url(self, path_value: str) -> str:
+        if path_value.startswith("http://") or path_value.startswith("https://"):
+            return path_value
+        normalized = self._normalize_storage_path(path_value, self.buckets.models)
+        try:
+            return await self.sign_file(self.buckets.models, normalized)
+        except SupabaseError:
+            return f"{self._public_storage_root}/{self.buckets.models}/{normalized}"
+
     async def fetch_game_by_code(self, code: str) -> Optional[Dict[str, Any]]:
         params = {"code": f"eq.{code}", "select": "*", "limit": 1}
         response = await self._rest_request("GET", "/games", params=params)
@@ -152,7 +171,20 @@ class SupabaseClient:
         self, game_id: str, user_id: str, user_email: str
     ) -> Dict[str, Any]:
         existing = await self.fetch_player(game_id, user_id)
+        avatar_url: Optional[str] = None
+        try:
+            avatar_record = await self.fetch_user_avatar(user_id)
+            if avatar_record and avatar_record.get("avatar_glb_url"):
+                avatar_url = await self._sign_model_url(str(avatar_record["avatar_glb_url"]))
+        except SupabaseError:
+            avatar_url = None
+
         if existing:
+            if avatar_url and not existing.get("avatar_glb_url"):
+                try:
+                    return await self.update_player_avatar(existing["id"], avatar_url)
+                except SupabaseError:
+                    return existing
             return existing
 
         payload = {
@@ -161,6 +193,7 @@ class SupabaseClient:
             "user_email": user_email,
             "score": 0,
             "ready": False,
+            "avatar_glb_url": avatar_url,
         }
         response = await self._rest_request(
             "POST",
@@ -255,6 +288,19 @@ class SupabaseClient:
         response = await self._rest_request("PATCH", "/players", params=params, json_body={"score": new_score}, headers=headers)
         data = response.json()
         return data[0] if data else {"id": player_id, "score": new_score}
+
+    async def update_player_avatar(self, player_id: str, avatar_url: str) -> Dict[str, Any]:
+        params = {"id": f"eq.{player_id}"}
+        headers = {"Prefer": "return=representation"}
+        response = await self._rest_request(
+            "PATCH",
+            "/players",
+            params=params,
+            json_body={"avatar_glb_url": avatar_url},
+            headers=headers,
+        )
+        data = response.json()
+        return data[0] if data else {"id": player_id, "avatar_glb_url": avatar_url}
 
     async def upload_file(self, bucket: str, path: str, *, content: bytes, content_type: str) -> None:
         headers = {"Content-Type": content_type, "X-Upsert": "true"}

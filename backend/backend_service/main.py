@@ -9,17 +9,18 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 from urllib.parse import urlparse
+from pathlib import Path
 
 import httpx
 import socketio
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.staticfiles import StaticFiles
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from backend_service.schemas import (
     AvatarImportRequest,
     AvatarImportResponse,
     AvatarMeResponse,
-    EntryRequest,
     EntryResponse,
     FirecrawlScrapeRequest,
     FirecrawlScrapeResponse,
@@ -97,6 +98,10 @@ app = FastAPI(title="DressToImpress FastAPI Service", version="1.0.0")
 bearer_scheme = HTTPBearer(auto_error=False)
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 socket_app = socketio.ASGIApp(sio, other_asgi_app=app)
+
+static_dir = Path(__file__).resolve().parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 STREAMING_ROOM_PREFIX = "game:"
 
@@ -590,58 +595,46 @@ async def get_round_items(
 
 
 @app.post("/entries", response_model=EntryResponse, status_code=status.HTTP_201_CREATED)
-async def submit_entry(
-    payload: EntryRequest, user: Dict[str, Any] = Depends(get_current_user)
-) -> EntryResponse:
+async def submit_entry(request: Request, user: Dict[str, Any] = Depends(get_current_user)) -> EntryResponse:
     user_id = str(user.get("id"))
     try:
-        decoded = data_url_to_bytes(payload.screenshot_dataUrl)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        payload: Dict[str, Any] = await request.json()
+    except Exception as exc:  # pragma: no cover - defensive parse
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON body") from exc
 
-    mime_type = str(decoded["mime"] or "").strip().lower()
-    if not mime_type:
-        mime_type = "image/png"
-    allowed_screenshot_mimes = {
-        "image/png": "png",
-        "image/x-png": "png",
-        "image/jpeg": "jpg",
-        "image/jpg": "jpg",
-        "image/webp": "webp",
-    }
-    extension = allowed_screenshot_mimes.get(mime_type)
-    if not mime_type.startswith("image/"):
-        logger.warning("Unexpected screenshot mime type %s, coercing to image/png", mime_type)
-        mime_type = "image/png"
-        extension = "png"
-    if not extension:
-        subtype = mime_type.split("/", 1)[1]
-        sanitized = re.sub(r"[^a-z0-9]+", "", subtype)
-        extension = sanitized or "img"
+    game_id = str(payload.get("game_id") or "")
+    round_value = payload.get("round")
+    model_url_raw = payload.get("model_glb_url") or payload.get("model_url")
 
-    object_id = uuid.uuid4().hex
-    path = f"{user_id}/{object_id}.{extension}"
-    try:
-        await supabase.upload_file(
-            supabase.buckets.screenshots,
-            path,
-            content=decoded["content"],
-            content_type=mime_type,
+    if not game_id or not model_url_raw or round_value is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="game_id, round, and model_glb_url are required",
         )
-        signed_url = await safe_sign_file(supabase.buckets.screenshots, path)
+
+    try:
+        model_url = str(model_url_raw)
         await supabase.insert_entry(
             {
-                "game_id": payload.game_id,
-                "round": payload.round,
+                "game_id": game_id,
+                "round": int(round_value),
                 "user_id": user_id,
-                "model_glb_url": str(payload.model_glb_url),
-                "screenshot_path": f"{supabase.buckets.screenshots}/{path}",
+                "model_glb_url": model_url,
+                "screenshot_path": None,
             }
         )
+        player = await supabase.fetch_player(game_id, user_id)
+        if player:
+            try:
+                await supabase.update_player_avatar(player["id"], model_url)
+            except SupabaseError as exc:
+                logger.warning(
+                    "Failed to persist avatar on player player_id=%s error=%s", player.get("id"), exc
+                )
     except SupabaseError as exc:
         raise supabase_error_to_http(exc) from exc
 
-    return EntryResponse(screenshot_url_signed=signed_url)
+    return EntryResponse(model_glb_url=str(model_url_raw), screenshot_url_signed=None)
 
 
 @app.post("/votes", status_code=status.HTTP_201_CREATED)

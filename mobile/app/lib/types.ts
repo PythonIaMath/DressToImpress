@@ -19,6 +19,5 @@ export type Player = {
   score: number;
   ready: boolean;
   created_at?: string;
-  screenshot_url?: string | null;
   avatar_glb_url?: string | null;
 };
