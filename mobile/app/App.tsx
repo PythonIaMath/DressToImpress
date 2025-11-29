@@ -124,6 +124,20 @@ export default function App() {
     setGame(nextGame);
     setPlayers(nextPlayers);
     setScreen('scoreboard');
+    // Rafraîchir les scores pour tous les clients (même non-host)
+    supabase
+      .from('players')
+      .select('*')
+      .eq('game_id', nextGame.id)
+      .order('score', { ascending: false })
+      .then(({ data }) => {
+        if (data) {
+          setPlayers(data as Player[]);
+        }
+      })
+      .catch(() => {
+        // ignore: on garde les standings reçus
+      });
   };
 
   const handleNextRound = (nextGame: Game, nextPlayers: Player[]) => {

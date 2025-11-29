@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Alert, Button, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Button, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import type { User } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabaseClient';
 import type { Game, Player } from '../lib/types';
@@ -12,14 +12,7 @@ type ScoreboardScreenProps = {
   onGameEnded: () => void;
 };
 
-export function ScoreboardScreen({
-  session,
-  user,
-  game,
-  players,
-  onNextRound,
-  onGameEnded,
-}: ScoreboardScreenProps) {
+export function ScoreboardScreen({ user, game, players, onNextRound, onGameEnded }: ScoreboardScreenProps) {
   const [standings, setStandings] = useState<Player[]>(players);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -28,7 +21,6 @@ export function ScoreboardScreen({
   }, [standings]);
 
   const winner = orderedStandings[0];
-  const remainingRounds = Math.max(0, 3 - game.round);
   const isHost = user.id === game.host_id;
 
   useEffect(() => {
@@ -74,26 +66,14 @@ export function ScoreboardScreen({
 
       onNextRound(data as Game, standings);
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Impossible de démarrer le round suivant. Merci de réessayer.';
-      Alert.alert('Erreur', message);
+      console.warn('[Scoreboard] handleNextRound failed', error);
     } finally {
       setRefreshing(false);
     }
   };
 
   const handleEndGame = () => {
-    Alert.alert(
-      'Partie terminée',
-      winner
-        ? `Bravo à ${winner.user_email} !`
-        : 'Merci à tous les joueurs.',
-      [
-        { text: 'OK', onPress: onGameEnded },
-      ]
-    );
+    onGameEnded();
   };
 
   return (
@@ -119,28 +99,20 @@ export function ScoreboardScreen({
       </View>
 
       <View style={styles.footer}>
-        {remainingRounds > 0 ? (
-          <>
-            <Text style={styles.footerText}>
-              {remainingRounds} round(s) restant(s)
-            </Text>
-            {isHost && (
-              <Button
-                title={refreshing ? 'Préparation...' : 'Round suivant'}
-                onPress={handleNextRound}
-                disabled={refreshing}
-              />
-            )}
-          </>
-        ) : (
-          <>
-            <Text style={styles.footerText}>
-              {winner
-                ? `Vainqueur : ${winner.user_email}`
-                : 'Égalité parfaite !'}
-            </Text>
-            {isHost && <Button title="Terminer" onPress={handleEndGame} />}
-          </>
+        <Text style={styles.footerText}>
+          {winner ? `Vainqueur : ${winner.user_email}` : 'Égalité parfaite !'}
+        </Text>
+        <Button
+          title="Retour au lobby"
+          onPress={handleEndGame}
+          disabled={refreshing}
+        />
+        {isHost && (
+          <Button
+            title={refreshing ? 'Préparation...' : 'Relancer une partie'}
+            onPress={handleNextRound}
+            disabled={refreshing}
+          />
         )}
       </View>
     </SafeAreaView>

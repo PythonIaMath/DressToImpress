@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Button, Modal, SafeAreaView, StyleSheet, Text, View } from 'react-native';
+import { Button, SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import type { User } from '@supabase/supabase-js';
 
 import { StarRating } from '../components/StarRating';
@@ -9,6 +9,8 @@ import { computeScores, submitVote } from '../lib/api';
 import type { Game, Player } from '../lib/types';
 import { supabase } from '../lib/supabaseClient';
 import { streamingSocket } from '../lib/streaming/socketClient';
+
+const PRESENTATION_DURATION_SECONDS = 20;
 
 const SUPABASE_PROJECT_URL =
   process.env.EXPO_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL ?? null;
@@ -98,11 +100,16 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
   const [currentPlayerId, setCurrentPlayerId] = useState<string | null>(game.current_player);
   const [hasVoted, setHasVoted] = useState(false);
   const [selectedStars, setSelectedStars] = useState(0);
-  const [voteCountdown, setVoteCountdown] = useState(30);
+  const [voteCountdown, setVoteCountdown] = useState(PRESENTATION_DURATION_SECONDS);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
   const [availableAnimations, setAvailableAnimations] = useState<string[]>([]);
   const [localAnimation, setLocalAnimation] = useState<string | null>(null);
   const [remoteAnimation, setRemoteAnimation] = useState<string | null>(null);
+  const [currentTargetVoteCount, setCurrentTargetVoteCount] = useState(0);
+  const advancingRef = useRef(false);
+  const votePollRef = useRef<NodeJS.Timeout | null>(null);
+  const finishedRef = useRef(false);
+  const isHost = currentGame.host_id === user.id;
 
   const sortedPlayers = useMemo(() => {
     return [...players].sort((left, right) => {
@@ -112,7 +119,7 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
     });
   }, [players]);
 
-  const expectedVotes = useMemo(() => Math.max(sortedPlayers.length - 1, 1), [sortedPlayers.length]);
+  const expectedVotes = useMemo(() => Math.max(sortedPlayers.length - 1, 0), [sortedPlayers.length]);
 
   const myPlayer = useMemo(
     () =>
@@ -219,15 +226,20 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
   }, [game.id, game.round, sortedPlayers]);
 
   useEffect(() => {
-    if (!currentPlayerId && sortedPlayers.length > 0 && currentGame.host_id === user.id) {
-      const next = sortedPlayers.find((player) => player.user_id !== user.id);
+    if (!currentPlayerId && sortedPlayers.length > 0 && !advancingRef.current) {
+      const next = sortedPlayers[0];
       if (next) {
-        updateCurrentPlayer(next.id);
-      } else if (sortedPlayers[0]) {
-        updateCurrentPlayer(sortedPlayers[0].id);
+        setCurrentPlayerLocal(next.id);
+        const ensure = async () => {
+          const { error } = await updateCurrentPlayer(next.id);
+          if (error) {
+            console.warn('[Rating] failed to init current_player, falling back local', error);
+          }
+        };
+        void ensure();
       }
     }
-  }, [currentPlayerId, currentGame.host_id, sortedPlayers, user.id]);
+  }, [currentPlayerId, sortedPlayers]);
 
   useEffect(() => {
     const gameChannel = supabase
@@ -239,6 +251,9 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
           const nextGame = payload.new as Game;
           setCurrentGame(nextGame);
           setCurrentPlayerId(nextGame.current_player);
+          if (nextGame.phase === 'scoreboard') {
+            finishedRef.current = true;
+          }
 
           if (nextGame.phase === 'scoreboard') {
             const { data } = await supabase
@@ -258,16 +273,13 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
       .channel(`rating-votes-${game.id}`)
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'votes', filter: `game_id=eq.${game.id}` },
+        { event: 'INSERT', schema: 'public', table: 'votes', filter: `game_id=eq.${game.id}` },
         async (payload) => {
-          if (currentGame.host_id !== user.id || !currentPlayerId) {
-            return;
-          }
           const targetId = (payload.new as { target_id?: string })?.target_id;
-          if (!targetId || targetId !== currentPlayerId) {
+          if (!currentPlayerId || !targetId || targetId !== currentPlayerId) {
             return;
           }
-          await checkVotesAndAdvance(currentPlayerId);
+          void refreshVoteCountAndMaybeAdvance();
         }
       )
       .subscribe();
@@ -278,6 +290,10 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
       if (countdownRef.current) {
         clearInterval(countdownRef.current);
       }
+      if (votePollRef.current) {
+        clearInterval(votePollRef.current);
+        votePollRef.current = null;
+      }
     };
   }, [game.id, currentGame.host_id, currentPlayerId, onShowScoreboard, user.id]);
 
@@ -287,11 +303,34 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
     setAvailableAnimations([]);
     setLocalAnimation(null);
     setRemoteAnimation(null);
+    setCurrentTargetVoteCount(0);
+    advancingRef.current = false;
+    finishedRef.current = false;
   }, [currentPlayer, isMyTurn]);
 
   useEffect(() => {
     resetCountdown();
+    void refreshVoteCountAndMaybeAdvance();
+    if (votePollRef.current) {
+      clearInterval(votePollRef.current);
+    }
+    votePollRef.current = setInterval(() => {
+      void refreshVoteCountAndMaybeAdvance();
+    }, 1500);
+    return () => {
+      if (votePollRef.current) {
+        clearInterval(votePollRef.current);
+        votePollRef.current = null;
+      }
+    };
   }, [currentPlayerId]);
+
+  // Si aucun vote n'est attendu (joueur solo), avancer immédiatement.
+  useEffect(() => {
+    if (expectedVotes === 0 && !advancingRef.current) {
+      advanceToNextPlayer();
+    }
+  }, [expectedVotes]);
 
   useEffect(() => {
     const handleAnimationCommand = (payload: { userId?: string; command?: string }) => {
@@ -308,19 +347,41 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
     };
   }, [currentPlayer, user.id]);
 
+  useEffect(() => {
+    const handleScoreboard = (payload: { gameId?: string; round?: number; standings?: Player[] }) => {
+      if (!payload?.gameId || payload.gameId !== game.id || finishedRef.current) {
+        return;
+      }
+      stopTimers();
+      finishedRef.current = true;
+      const standings = payload.standings ?? players;
+      onShowScoreboard(currentGame, standings);
+    };
+    streamingSocket.on('scoreboard', handleScoreboard);
+    return () => {
+      streamingSocket.off('scoreboard', handleScoreboard);
+    };
+  }, [currentGame, game.id, onShowScoreboard, players]);
+
   const resetCountdown = () => {
     if (countdownRef.current) {
       clearInterval(countdownRef.current);
     }
-    setVoteCountdown(30);
+    setVoteCountdown(PRESENTATION_DURATION_SECONDS);
     countdownRef.current = setInterval(() => {
       setVoteCountdown((previous) => {
         if (previous <= 1) {
           if (countdownRef.current) {
             clearInterval(countdownRef.current);
           }
-          if (currentGame.host_id === user.id && currentPlayerId) {
-            advanceToNextPlayer();
+          if (currentPlayerId && !advancingRef.current && !finishedRef.current) {
+            const currentIndex = sortedPlayers.findIndex((player) => player.id === currentPlayerId);
+            const isLastPlayer = currentIndex >= 0 && currentIndex === sortedPlayers.length - 1;
+            if (isLastPlayer) {
+              void handleFinishRound();
+            } else {
+              advanceToNextPlayer();
+            }
           }
           return 0;
         }
@@ -329,26 +390,33 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
     }, 1_000);
   };
 
-  const updateCurrentPlayer = async (playerId: string | null) => {
-    await supabase.from('games').update({ current_player: playerId }).eq('id', game.id);
-  };
-
-  const checkVotesAndAdvance = async (playerId: string) => {
-    const { count } = await supabase
-      .from('votes')
-      .select('*', { count: 'exact', head: true })
-      .eq('game_id', game.id)
-      .eq('round', game.round)
-      .eq('target_id', playerId);
-
-    if ((count ?? 0) >= expectedVotes) {
-      await advanceToNextPlayer();
+  const stopTimers = () => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+    if (votePollRef.current) {
+      clearInterval(votePollRef.current);
+      votePollRef.current = null;
     }
   };
 
+  const updateCurrentPlayer = async (playerId: string | null) => {
+    return supabase.from('games').update({ current_player: playerId }).eq('id', game.id);
+  };
+
+  const setCurrentPlayerLocal = (playerId: string | null) => {
+    setCurrentPlayerId(playerId);
+    setCurrentGame((prev) => ({ ...prev, current_player: playerId }));
+  };
+
   const advanceToNextPlayer = async () => {
+    if (advancingRef.current) {
+      return;
+    }
+    advancingRef.current = true;
     const currentIndex = sortedPlayers.findIndex((player) => player.id === currentPlayerId);
-    const nextIndex = currentIndex + 1;
+    const nextIndex = currentIndex >= 0 ? currentIndex + 1 : 0;
 
     if (nextIndex >= sortedPlayers.length) {
       await handleFinishRound();
@@ -356,29 +424,87 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
     }
 
     const nextPlayer = sortedPlayers[nextIndex];
-    await updateCurrentPlayer(nextPlayer.id);
-    resetCountdown();
+    try {
+      setCurrentPlayerLocal(nextPlayer.id);
+      resetCountdown();
+      void updateCurrentPlayer(nextPlayer.id).then(({ error }) => {
+        if (error) {
+          console.warn('[Rating] Failed to update current player on backend', error);
+        }
+      });
+    } finally {
+      advancingRef.current = false;
+    }
+  };
+
+  const refreshVoteCountAndMaybeAdvance = async () => {
+    if (!currentPlayerId || finishedRef.current) {
+      return;
+    }
+    const { count, error } = await supabase
+      .from('votes')
+      .select('*', { count: 'exact', head: true })
+      .eq('game_id', game.id)
+      .eq('round', game.round)
+      .eq('target_id', currentPlayerId);
+    if (error) {
+      console.warn('[Rating] vote count refresh failed', error);
+      return;
+    }
+    const total = count ?? 0;
+    setCurrentTargetVoteCount(total);
+    if (total >= expectedVotes && !advancingRef.current && !finishedRef.current) {
+      const currentIndex = sortedPlayers.findIndex((player) => player.id === currentPlayerId);
+      const isLastPlayer = currentIndex >= 0 && currentIndex === sortedPlayers.length - 1;
+      if (isLastPlayer) {
+        await handleFinishRound();
+      } else {
+        advanceToNextPlayer();
+      }
+    }
   };
 
   const handleFinishRound = async () => {
+    if (finishedRef.current) {
+      return;
+    }
+    finishedRef.current = true;
+    stopTimers();
+    let standings: Player[] | null = null;
     try {
       await computeScores(game.id, game.round);
+    } catch (error) {
+      console.warn('[Rating] handleFinishRound computeScores error', error);
+    }
+    try {
+      const { data } = await supabase
+        .from('players')
+        .select('*')
+        .eq('game_id', game.id)
+        .order('score', { ascending: false });
+      standings = (data ?? null) as Player[] | null;
+    } catch (error) {
+      console.warn('[Rating] handleFinishRound standings fetch error', error);
+    }
+    try {
       await supabase
         .from('games')
         .update({ phase: 'scoreboard', current_player: null })
         .eq('id', game.id);
     } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : 'Impossible de calculer les scores. Merci de réessayer.';
-      Alert.alert('Erreur', message);
+      console.warn('[Rating] handleFinishRound phase update error', error);
+    }
+    advancingRef.current = false;
+    const finalStandings = standings ?? players;
+    onShowScoreboard(currentGame, finalStandings);
+    // broadcast to other clients
+    if (isHost && finalStandings) {
+      streamingSocket.sendScoreboard({ gameId: game.id, round: game.round, standings: finalStandings });
     }
   };
 
   const submitCurrentVote = async () => {
-    if (!currentPlayer || selectedStars === 0) {
-      Alert.alert('Note requise', 'Merci de sélectionner une note avant de voter.');
+    if (!currentPlayer || selectedStars === 0 || finishedRef.current) {
       return;
     }
 
@@ -390,14 +516,10 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
         target_id: currentPlayer.id,
         stars: selectedStars,
       });
-      Alert.alert('Vote enregistré', 'Merci pour ta participation !');
+      void refreshVoteCountAndMaybeAdvance();
     } catch (error) {
       setHasVoted(false);
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Impossible d'envoyer le vote. Merci de réessayer.";
-      Alert.alert('Erreur', message);
+      console.warn('[Rating] submit vote failed', error);
     }
   };
 
@@ -447,6 +569,9 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
           )}
         </View>
         <View style={styles.controlsOverlay}>
+          <View style={styles.timerPill}>
+            <Text style={styles.timerText}>{voteCountdown}s</Text>
+          </View>
           {!isMyTurn ? (
             <View style={styles.voteCard}>
               <StarRating value={selectedStars} onChange={setSelectedStars} disabled={hasVoted} />
@@ -466,11 +591,6 @@ export function RatingScreen({ user, game, players, onShowScoreboard }: RatingSc
                 />
               </View>
             )
-          )}
-          {user.id === currentGame.host_id && (
-            <View style={styles.hostActions}>
-              <Button title="Passer au suivant" onPress={advanceToNextPlayer} />
-            </View>
           )}
         </View>
       </View>
@@ -516,13 +636,23 @@ const styles = StyleSheet.create({
     bottom: 12,
     gap: 10,
   },
+  timerPill: {
+    alignSelf: 'flex-end',
+    backgroundColor: 'rgba(17, 29, 48, 0.9)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    marginBottom: 4,
+  },
+  timerText: {
+    color: '#f8fafc',
+    fontWeight: '700',
+    fontSize: 14,
+  },
   voteCard: {
     backgroundColor: '#111d30',
     padding: 16,
     borderRadius: 14,
     gap: 10,
-  },
-  hostActions: {
-    alignSelf: 'flex-end',
   },
 });

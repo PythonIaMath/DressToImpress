@@ -142,6 +142,11 @@ class StreamingSocketClient {
     socket.emit('animation:command', { command, parameters });
   }
 
+  async sendScoreboard(payload: { gameId: string; round: number; standings: Player[] }): Promise<void> {
+    const socket = await this.ensureConnected();
+    socket.emit('scoreboard', payload);
+  }
+
   on<TPayload = unknown>(event: string, handler: (payload: TPayload) => void): void {
     void this.ensureConnected().then(() => {
       this.socket?.on(event, handler as (...args: any[]) => void);
